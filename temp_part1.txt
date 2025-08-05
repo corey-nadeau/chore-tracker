@@ -1,0 +1,585 @@
+﻿import { useState, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
+import { doc, getDoc, updateDoc, collection, query, where, onSnapshot, orderBy, getDocs, addDoc } from 'firebase/firestore';
+import { auth, db } from '../firebase';
+import toast from 'react-hot-toast';
+import SuccessModal from './SuccessModal';
+
+function ChildDashboard() {
+  const { childToken } = useParams();
+  const [child, setChild] = useState(null);
+  const [chores, setChores] = useState([]);
+  const [currentGoals, setCurrentGoals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [completedChore, setCompletedChore] = useState(null);
+  const [selectedGoal, setSelectedGoal] = useState(null);
+  const [goalChores, setGoalChores] = useState([]);
+  const [showProfilePicker, setShowProfilePicker] = useState(false);
+
+  useEffect(() => {
+    setupChildListener();
+  }, [childToken]);
+
+  useEffect(() => {
+    if (child) {
+      console.log('Child data loaded, setting up listeners for:', child);
+      setupChoresListener();
+      setupGoalsListener();
+    }
+  }, [child]);
+
+  const setupChildListener = () => {
+    if (!childToken) return;
+    
+    console.log('Setting up child listener for token:', childToken);
+    
+    // Find child by token
+    const childrenRef = collection(db, 'children');
+    const q = query(childrenRef, where('token', '==', childToken));
+    
+    const unsubscribe = onSnapshot(q, (querySnapshot) => {
+      console.log('Child query results for token:', querySnapshot.size, 'documents found');
+      
+      if (!querySnapshot.empty) {
+        const childDoc = querySnapshot.docs[0];
+        const childData = { id: childDoc.id, ...childDoc.data() };
+        console.log('Child data found:', childData);
+        setChild(childData);
+      } else {
+        console.log('No child found with token:', childToken);
+        setChild(null);
+      }
+      setLoading(false);
+    }, (error) => {
+      console.error('Error in child listener:', error);
+      setChild(null);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  };
+
+  const setupGoalsListener = () => {
+    console.log('Setting up goals listener for child ID:', child.id);
+    
+    // First, let's test if we can access the goals collection at all
+    const allGoalsRef = collection(db, 'goals');
+    getDocs(allGoalsRef).then(allGoalsSnapshot => {
+      console.log('Total goals in database (accessible to child):', allGoalsSnapshot.size);
+      allGoalsSnapshot.docs.forEach((doc, index) => {
+        const data = doc.data();
+        console.log(`Goal ${index + 1}:`, {
+          id: doc.id,
+          title: data.title,
+          childId: data.childId,
+          status: data.status,
+          parentId: data.parentId,
+          childIdMatch: data.childId === child.id
+        });
+      });
+    }).catch(error => {
+      console.error('Error accessing goals collection:', error);
+    });
+    
+    const goalsQuery = query(
+      collection(db, 'goals'),
+      where('childId', '==', child.id),
+      where('status', '==', 'active')
+    );
+    
+    const unsubscribe = onSnapshot(goalsQuery, (snapshot) => {
+      console.log('Goals query results for child', child.id, ':', snapshot.size, 'documents found');
+      
+      const goalsData = snapshot.docs.map(doc => {
+        const data = { id: doc.id, ...doc.data() };
+        console.log('Goal found:', data);
+        return data;
+      });
+      
+      // Sort in JavaScript instead of Firestore to avoid index requirement
+      goalsData.sort((a, b) => {
+        const aDate = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt);
+        const bDate = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt);
+        return bDate - aDate;
+      });
+      
+      setCurrentGoals(goalsData);
+      console.log('Final goals state set:', goalsData);
+    }, (error) => {
+      console.error('Error listening to goals:', error);
+      setCurrentGoals([]);
+    });
+
+    return unsubscribe;
+  };
+
+  const fetchCurrentGoal = async () => {
+    // This function is now replaced by setupGoalsListener for real-time updates
+    try {
+      const goalsQuery = query(
+        collection(db, 'goals'),
+        where('childId', '==', child.id),
+        where('status', '==', 'active')
+      );
+      
+      const goalsSnapshot = await getDocs(goalsQuery);
+      if (!goalsSnapshot.empty) {
+        const goalsData = goalsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setCurrentGoals(goalsData);
+        console.log('Active goals found:', goalsData);
+      } else {
+        setCurrentGoals([]);
+        console.log('No active goals found for child');
+      }
+    } catch (error) {
+      console.error('Error fetching current goals:', error);
+    }
+  };
+
+  const setupChoresListener = () => {
+    console.log('Setting up chores listener for child ID:', child.id);
+    
+    // First, let's see ALL chores in the database for debugging
+    const allChoresRef = collection(db, 'chores');
+    getDocs(allChoresRef).then(allChoresSnapshot => {
+      console.log('Total chores in database:', allChoresSnapshot.size);
+      allChoresSnapshot.docs.forEach((doc, index) => {
+        const data = doc.data();
+        console.log(`Chore ${index + 1}:`, {
+          id: doc.id,
+          title: data.title,
+          childId: data.childId,
+          status: data.status,
+          parentId: data.parentId
+        });
+      });
+    });
+    
+    // Simplified query without orderBy to avoid index requirement
+    const q = query(
+      collection(db, 'chores'),
+      where('childId', '==', child.id),
+      where('status', 'in', ['assigned', 'pending_approval', 'awaiting_goal_selection'])
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      console.log('Chores query results for child', child.id, ':', snapshot.size, 'documents found');
+      
+      const choresData = snapshot.docs.map(doc => {
+        const data = { id: doc.id, ...doc.data() };
+        console.log('Chore found:', data);
+        return data;
+      });
+      
+      // Sort in JavaScript instead of Firestore
+      choresData.sort((a, b) => {
+        const aDate = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt);
+        const bDate = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt);
+        return bDate - aDate;
+      });
+      
+      console.log('Final sorted chores:', choresData);
+      setChores(choresData);
+    }, (error) => {
+      console.error('Error in chores listener:', error);
+      toast.error(`Failed to load chores: ${error.message}`);
+    });
+
+    return () => unsubscribe();
+  };
+
+  const markChoreComplete = async (choreId) => {
+    try {
+      const choreRef = doc(db, 'chores', choreId);
+      await updateDoc(choreRef, {
+        status: 'pending_approval',
+        completedAt: new Date(),
+        completedBy: child.id,
+        // Clear rejection fields when resubmitting
+        rejectedAt: null,
+        rejectedBy: null,
+        rejectionMessage: null
+      });
+
+      const chore = chores.find(c => c.id === choreId);
+      setCompletedChore(chore);
+      setShowSuccessModal(true);
+
+      toast.success('Great job! Waiting for parent approval Ã°Å¸Å½â€°');
+    } catch (error) {
+      toast.error('Failed to mark chore as complete');
+    }
+  };
+
+  const transferFromSavings = async (goalId, amount) => {
+    try {
+      const childRef = doc(db, 'children', child.id);
+      const currentSavings = child.savingsBucket || 0;
+      
+      if (currentSavings < amount) {
+        toast.error('Not enough money in savings bucket');
+        return;
+      }
+
+      const goalRef = doc(db, 'goals', goalId);
+      const goalDoc = await getDoc(goalRef);
+      
+      if (goalDoc.exists()) {
+        const goalData = goalDoc.data();
+        const currentSavedAmount = goalData.savedAmount || 0;
+        const newSavedAmount = currentSavedAmount + amount;
+        const targetAmount = goalData.targetAmount || 0;
+        const goalCompleted = newSavedAmount >= targetAmount;
+
+        // Update goal
+        await updateDoc(goalRef, {
+          savedAmount: goalCompleted ? targetAmount : newSavedAmount,
+          lastUpdated: new Date(),
+          ...(goalCompleted && { completedAt: new Date() })
+        });
+
+        // Update child's savings bucket
+        await updateDoc(childRef, {
+          savingsBucket: currentSavings - amount
+        });
+
+        // If goal completed, notify parent
+        if (goalCompleted) {
+          await addDoc(collection(db, 'notifications'), {
+            type: 'goal_completed',
+            childId: child.id,
+            goalId: goalId,
+            goalTitle: goalData.title,
+            parentId: child.parentId,
+            message: `${child.firstName} has completed their goal: ${goalData.title}!`,
+            createdAt: new Date(),
+            read: false
+          });
+          
+          toast.success(`Ã°Å¸Å½â€° GOAL COMPLETED! ${goalData.title} reached! Ã°Å¸Å½â€°`, { duration: 6000 });
+        } else {
+          toast.success(`$${amount.toFixed(2)} moved to ${goalData.title}! Ã°Å¸Å½Â¯`);
+        }
+      }
+    } catch (error) {
+      console.error('Error transferring from savings:', error);
+      toast.error('Failed to transfer money');
+    }
+  };
+
+  const updateProfilePicture = async (emoji) => {
+    try {
+      const childRef = doc(db, 'children', child.id);
+      await updateDoc(childRef, {
+        profilePicture: emoji,
+        lastUpdated: new Date()
+      });
+      
+      toast.success(`Profile picture updated! ${emoji}`);
+      setShowProfilePicker(false);
+    } catch (error) {
+      console.error('Error updating profile picture:', error);
+      toast.error('Failed to update profile picture');
+    }
+  };
+
+  const applyRewardToGoal = async (choreId, goalId) => {
+    try {
+      const chore = chores.find(c => c.id === choreId);
+      if (!chore) return;
+
+      let amountToApply = chore.reward;
+      let remainderAmount = 0;
+      let goalCompleted = false;
+
+      // Update child's total earnings
+      const childRef = doc(db, 'children', child.id);
+      const childDoc = await getDoc(childRef);
+      const currentEarnings = childDoc.data()?.totalEarnings || 0;
+      const currentSavings = childDoc.data()?.savingsBucket || 0;
+      
+      await updateDoc(childRef, {
+        totalEarnings: currentEarnings + chore.reward
+      });
+
+      // If a specific goal was selected, check if it would exceed the target
+      if (goalId) {
+        const goalRef = doc(db, 'goals', goalId);
+        const goalDoc = await getDoc(goalRef);
+        if (goalDoc.exists()) {
+          const goalData = goalDoc.data();
+          const currentSavedAmount = goalData.savedAmount || 0;
+          const targetAmount = goalData.targetAmount || 0;
+          const remainingNeeded = Math.max(0, targetAmount - currentSavedAmount);
+          
+          if (amountToApply >= remainingNeeded && remainingNeeded > 0) {
+            // Goal will be completed with this reward
+            amountToApply = remainingNeeded;
+            remainderAmount = chore.reward - remainingNeeded;
+            goalCompleted = true;
+            
+            await updateDoc(goalRef, {
+              savedAmount: targetAmount,
+              lastUpdated: new Date(),
+              completedAt: new Date()
+            });
+
+            // Add remainder to savings bucket
+            if (remainderAmount > 0) {
+              await updateDoc(childRef, {
+                savingsBucket: currentSavings + remainderAmount
+              });
+            }
+
+            // Notify parent of goal completion
+            await addDoc(collection(db, 'notifications'), {
+              type: 'goal_completed',
+              childId: child.id,
+              goalId: goalId,
+              goalTitle: goalData.title,
+              parentId: child.parentId,
+              message: `${child.firstName} has completed their goal: ${goalData.title}!`,
+              createdAt: new Date(),
+              read: false
+            });
+            
+          } else if (remainingNeeded > 0) {
+            // Normal case - add full amount to goal
+            await updateDoc(goalRef, {
+              savedAmount: currentSavedAmount + amountToApply,
+              lastUpdated: new Date()
+            });
+          } else {
+            // Goal already completed, add to savings bucket instead
+            await updateDoc(childRef, {
+              savingsBucket: currentSavings + chore.reward
+            });
+            amountToApply = 0;
+            remainderAmount = chore.reward;
+          }
+        }
+      } else {
+        // Add directly to savings bucket
+        await updateDoc(childRef, {
+          savingsBucket: currentSavings + chore.reward
+        });
+      }
+
+      // Mark chore as fully approved and processed
+      const choreRef = doc(db, 'chores', choreId);
+      await updateDoc(choreRef, {
+        status: 'approved',
+        goalAppliedTo: goalId,
+        rewardAppliedAt: new Date()
+      });
+
+      // Show appropriate success message
+      if (goalCompleted) {
+        const goal = currentGoals.find(g => g.id === goalId);
+        toast.success(`Ã°Å¸Å½â€° GOAL COMPLETED! ${goal?.title} reached! Ã°Å¸Å½â€°`, { duration: 6000 });
+        if (remainderAmount > 0) {
+          toast.success(`$${remainderAmount.toFixed(2)} added to your savings bucket! Ã°Å¸â€™Â°`, { duration: 4000 });
+        }
+      } else if (goalId && amountToApply > 0) {
+        const goal = currentGoals.find(g => g.id === goalId);
+        toast.success(`$${amountToApply.toFixed(2)} added to your ${goal?.title} goal! Ã°Å¸Å½Â¯Ã°Å¸â€™Â°`);
+      } else {
+        toast.success(`$${chore.reward.toFixed(2)} added to your savings bucket! Ã°Å¸â€™Â°`);
+      }
+    } catch (error) {
+      console.error('Error applying reward to goal:', error);
+      toast.error('Failed to apply reward');
+    }
+  };
+
+  const viewGoalDetails = async (goal) => {
+    setSelectedGoal(goal);
+    
+    // Fetch all approved chores for this child
+    try {
+      const allChoresQuery = query(
+        collection(db, 'chores'),
+        where('childId', '==', child.id),
+        where('status', '==', 'approved')
+      );
+      
+      const choresSnapshot = await getDocs(allChoresQuery);
+      const allApprovedChores = choresSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      
+      // Sort by completion date
+      allApprovedChores.sort((a, b) => {
+        const aDate = a.rewardAppliedAt?.toDate ? a.rewardAppliedAt.toDate() : new Date(a.approvedAt?.toDate ? a.approvedAt.toDate() : a.createdAt);
+        const bDate = b.rewardAppliedAt?.toDate ? b.rewardAppliedAt.toDate() : new Date(b.approvedAt?.toDate ? b.approvedAt.toDate() : b.createdAt);
+        return bDate - aDate;
+      });
+      
+      setGoalChores(allApprovedChores);
+    } catch (error) {
+      console.error('Error fetching goal chores:', error);
+      toast.error('Failed to load chore details');
+    }
+  };
+
+  const reassignChore = async (choreId, newGoalId, oldGoalId) => {
+    try {
+      const chore = goalChores.find(c => c.id === choreId);
+      if (!chore) return;
+
+      const childRef = doc(db, 'children', child.id);
+      const currentSavings = child.savingsBucket || 0;
+
+      // Remove reward from old goal if it was assigned to one
+      if (oldGoalId) {
+        const oldGoalRef = doc(db, 'goals', oldGoalId);
+        const oldGoalDoc = await getDoc(oldGoalRef);
+        if (oldGoalDoc.exists()) {
+          const oldGoalData = oldGoalDoc.data();
+          const currentSavedAmount = oldGoalData.savedAmount || 0;
+          
+          await updateDoc(oldGoalRef, {
+            savedAmount: Math.max(0, currentSavedAmount - chore.reward),
+            lastUpdated: new Date()
+          });
+        }
+      } else {
+        // Remove from savings bucket
+        await updateDoc(childRef, {
+          savingsBucket: Math.max(0, currentSavings - chore.reward)
+        });
+      }
+
+      // Add reward to new goal if one is selected
+      if (newGoalId) {
+        const newGoalRef = doc(db, 'goals', newGoalId);
+        const newGoalDoc = await getDoc(newGoalRef);
+        if (newGoalDoc.exists()) {
+          const newGoalData = newGoalDoc.data();
+          const currentSavedAmount = newGoalData.savedAmount || 0;
+          const targetAmount = newGoalData.targetAmount || 0;
+          const remainingNeeded = Math.max(0, targetAmount - currentSavedAmount);
+          
+          let amountToApply = chore.reward;
+          let remainderAmount = 0;
+          let goalCompleted = false;
+
+          if (amountToApply >= remainingNeeded && remainingNeeded > 0) {
+            // Goal will be completed
+            amountToApply = remainingNeeded;
+            remainderAmount = chore.reward - remainingNeeded;
+            goalCompleted = true;
+            
+            await updateDoc(newGoalRef, {
+              savedAmount: targetAmount,
+              lastUpdated: new Date(),
+              completedAt: new Date()
+            });
+
+            // Add remainder to savings bucket
+            if (remainderAmount > 0) {
+              const updatedSavings = Math.max(0, currentSavings - (oldGoalId ? 0 : chore.reward)) + remainderAmount;
+              await updateDoc(childRef, {
+                savingsBucket: updatedSavings
+              });
+            }
+
+            // Notify parent of goal completion
+            await addDoc(collection(db, 'notifications'), {
+              type: 'goal_completed',
+              childId: child.id,
+              goalId: newGoalId,
+              goalTitle: newGoalData.title,
+              parentId: child.parentId,
+              message: `${child.firstName} has completed their goal: ${newGoalData.title}!`,
+              createdAt: new Date(),
+              read: false
+            });
+            
+          } else if (remainingNeeded > 0) {
+            // Normal case - add full amount to goal
+            await updateDoc(newGoalRef, {
+              savedAmount: currentSavedAmount + amountToApply,
+              lastUpdated: new Date()
+            });
+          } else {
+            // Goal already completed, add to savings bucket instead
+            const updatedSavings = Math.max(0, currentSavings - (oldGoalId ? 0 : chore.reward)) + chore.reward;
+            await updateDoc(childRef, {
+              savingsBucket: updatedSavings
+            });
+            amountToApply = 0;
+            remainderAmount = chore.reward;
+          }
+        }
+      } else {
+        // Add to savings bucket
+        const updatedSavings = Math.max(0, currentSavings - (oldGoalId ? 0 : chore.reward)) + chore.reward;
+        await updateDoc(childRef, {
+          savingsBucket: updatedSavings
+        });
+      }
+
+      // Update chore's goal assignment
+      const choreRef = doc(db, 'chores', choreId);
+      await updateDoc(choreRef, {
+        goalAppliedTo: newGoalId,
+        lastReassigned: new Date()
+      });
+
+      // Update local state
+      setGoalChores(prev => prev.map(c => 
+        c.id === choreId ? { ...c, goalAppliedTo: newGoalId } : c
+      ));
+
+      const newGoal = currentGoals.find(g => g.id === newGoalId);
+      if (newGoalId) {
+        toast.success(`$${chore.reward.toFixed(2)} moved to ${newGoal?.title} goal! Ã°Å¸Å½Â¯`);
+      } else {
+        toast.success(`$${chore.reward.toFixed(2)} moved to savings bucket! Ã°Å¸ÂªÂ£`);
+      }
+    } catch (error) {
+      console.error('Error reassigning chore:', error);
+      toast.error('Failed to reassign chore');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-secondary-50">
+        <div className="text-center">
+          <div className="text-8xl mb-6 animate-bounce">Ã°Å¸ÂÆ’Ã¢â‚¬ÂÃ¢â„¢â€šÃ¯Â¸Â</div>
+          <h2 className="text-2xl font-bold text-gray-800">Loading your chores...</h2>
+        </div>
+      </div>
+    );
+  }
+
+  if (!child) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-400 via-blue-500 to-green-400 p-4">
+        <div className="bg-white rounded-3xl shadow-2xl p-12 text-center max-w-md w-full">
+          <div className="text-massive mb-6">Ã°Å¸Å½Â¯</div>
+          <h1 className="text-6xl font-fun bg-gradient-to-r from-blue-600 to-green-500 bg-clip-text text-transparent mb-6 tracking-wide">
+            ChoreTracker
+          </h1>
+          <div className="text-8xl mb-6">Ã°Å¸ËœÂµ</div>
+          <h2 className="text-3xl font-bold text-gray-800 mb-4 font-playful">Child not found</h2>
+          <p className="text-xl text-gray-600 font-playful">Please check your link and try again</p>
+        </div>
+      </div>
+    );
+  }
+
+  const assignedChores = chores.filter(chore => chore.status === 'assigned');
+  const pendingChores = chores.filter(chore => chore.status === 'pending_approval');
+  const goalSelectionChores = chores.filter(chore => chore.status === 'awaiting_goal_selection');
+  
+  // Get progress for each goal
+  const getGoalProgress = (goal) => {
+    if (!goal.isMonetary) return 0;
+    const savedAmount = goal.savedAmount || 0;
+    return Math.min(100, (savedAmount / goal.targetAmount) * 100);
+  };

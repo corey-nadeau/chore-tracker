@@ -1,0 +1,3 @@
+<!-- This is a placeholder. In a real app, you'd use actual PNG icon files -->
+<!-- For now, create a 192x192 PNG icon with a chore/cleaning theme -->
+<!-- You can generate icons using tools like favicon.io or create them in design software -->
