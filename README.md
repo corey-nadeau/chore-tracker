@@ -231,6 +231,12 @@ VITE_FIREBASE_APP_ID=your_app_id_here
 VITE_FIREBASE_MEASUREMENT_ID=your_measurement_id_here
 ```
 
+**Important Note**: Firebase client-side configuration (including API keys) are designed to be public and are not sensitive data. They identify your Firebase project and are safe to expose in client-side applications. Security is enforced through Firebase Security Rules, not by hiding the configuration.
+
+### Deployment Environment Variables
+
+When deploying to platforms like Netlify, Vercel, or others, add the same environment variables to your deployment platform's environment variable settings.
+
 ### Firestore Security Rules
 
 ```javascript
