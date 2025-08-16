@@ -1,0 +1,22 @@
+@import url('https://fonts.googleapis.com/css2?family=Fredoka+One:wght@400&family=Comic+Neue:wght@300;400;700&family=Bubblegum+Sans:wght@400&display=swap');
+@import "tailwindcss";
+
+/* Mobile safe area handling */
+.mobile-safe-top {
+  padding-top: env(safe-area-inset-top, 24px);
+}
+
+.mobile-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 24px);
+}
+
+/* Status bar background */
+.status-bar-bg {
+  height: env(safe-area-inset-top, 24px);
+  background-color: #0ea5e9;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+}

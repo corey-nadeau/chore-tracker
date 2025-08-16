@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Parents collection - allow authenticated users to read all, write their own + family members can update children arrays
+    match /parents/{parentId} {
+      allow read: if true; // Allow anyone to read parents (needed for family sharing links)
+      allow write: if request.auth != null && request.auth.uid == parentId; // Only write your own data
+      allow update: if request.auth != null && 
+        (request.auth.uid == parentId || // Can update your own document
+         (resource.data.familyMembers != null && 
+          request.auth.uid in resource.data.familyMembers)); // Must be a family member
+      allow delete: if request.auth != null && request.auth.token.email == 'coreynadeau1@gmail.com'; // Admin can delete any parent
+    }
+    
+    // Children collection - allow read/write for parents and unauthenticated access by token
+    match /children/{childId} {
+      allow read, write: if request.auth != null;
+      allow read: if true; // Allow unauthenticated read for child dashboard access
+      allow write: if true; // Allow unauthenticated write for completing chores
+      allow delete: if request.auth != null && request.auth.token.email == 'coreynadeau1@gmail.com'; // Admin can delete any child
+    }
+    
+    // Chores collection - allow access for parents and children
+    match /chores/{choreId} {
+      allow read, write: if request.auth != null;
+      allow read: if true; // Allow unauthenticated read for child dashboard
+      allow write: if true; // Allow unauthenticated write for marking chores complete
+      allow delete: if request.auth != null && request.auth.token.email == 'coreynadeau1@gmail.com'; // Admin can delete any chore
+    }
+    
+    // Goals collection - allow access for parents and children
+    match /goals/{goalId} {
+      allow read, write: if request.auth != null;
+      allow read: if true; // Allow unauthenticated read for child dashboard
+      allow write: if true; // Allow unauthenticated write if needed
+      allow delete: if request.auth != null && request.auth.token.email == 'coreynadeau1@gmail.com'; // Admin can delete any goal
+    }
+  }
+}

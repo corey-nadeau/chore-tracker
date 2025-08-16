@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">chore_tracking</string>
+    <string name="title_activity_main">chore_tracking</string>
+    <string name="package_name">kidschoretracker.netlify.app</string>
+    <string name="custom_url_scheme">kidschoretracker.netlify.app</string>
+</resources>
