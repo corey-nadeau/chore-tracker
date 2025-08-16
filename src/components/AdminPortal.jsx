@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, getDocs, doc, deleteDoc, writeBatch } from 'firebase/firestore';
+import { collection, getDocs, doc, deleteDoc, writeBatch, updateDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { deleteUser, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged } from 'firebase/auth';
 import toast from 'react-hot-toast';
@@ -304,6 +304,15 @@ function AdminPortal() {
     <div className="p-8 max-w-7xl mx-auto">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-4 text-red-600">🔧 Admin Portal</h1>
+        
+        {/* Earnings Reconciliation Section */}
+        <EarningsReconciliation 
+          children={children} 
+          chores={chores} 
+          goals={goals} 
+          onDataUpdate={fetchAllData}
+        />
+        
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
           <h2 className="text-lg font-bold text-red-800 mb-2">⚠️ Danger Zone</h2>
           <p className="text-red-700 mb-4">
@@ -512,6 +521,144 @@ function CollectionSection({ title, items, collectionName, selectedItems, onTogg
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function EarningsReconciliation({ children, chores, goals, onDataUpdate }) {
+  const [analyzing, setAnalyzing] = useState(false);
+  const [discrepancies, setDiscrepancies] = useState([]);
+  const [fixing, setFixing] = useState(false);
+
+  const analyzeEarnings = () => {
+    setAnalyzing(true);
+    const found = [];
+
+    children.forEach(child => {
+      // Calculate actual earnings from approved chores
+      const approvedChores = chores.filter(chore => 
+        chore.childId === child.id && chore.status === 'approved'
+      );
+      const actualEarnings = approvedChores.reduce((sum, chore) => sum + (chore.reward || 0), 0);
+      const recordedEarnings = child.totalEarnings || 0;
+
+      // Calculate goal progress
+      const childGoals = goals.filter(goal => goal.childId === child.id && goal.isMonetary);
+      let totalGoalProgress = 0;
+      childGoals.forEach(goal => {
+        totalGoalProgress += (goal.savedAmount || 0);
+      });
+
+      const earningsDiff = Math.round((recordedEarnings - actualEarnings) * 100) / 100;
+      const goalDiff = Math.round((recordedEarnings - totalGoalProgress) * 100) / 100;
+
+      if (earningsDiff !== 0 || goalDiff !== 0) {
+        found.push({
+          childId: child.id,
+          childName: child.firstName,
+          recordedEarnings,
+          actualEarnings,
+          totalGoalProgress,
+          earningsDiff,
+          goalDiff,
+          approvedChoresCount: approvedChores.length
+        });
+      }
+    });
+
+    setDiscrepancies(found);
+    setAnalyzing(false);
+  };
+
+  const fixDiscrepancy = async (discrepancy, fixType) => {
+    setFixing(true);
+    try {
+      const childRef = doc(db, 'children', discrepancy.childId);
+      
+      if (fixType === 'fixEarnings') {
+        // Update child's total earnings to match actual chore rewards
+        await updateDoc(childRef, {
+          totalEarnings: discrepancy.actualEarnings
+        });
+        toast.success(`Fixed ${discrepancy.childName}'s total earnings! 💰`);
+      } else if (fixType === 'fixGoals') {
+        // This is more complex - would need to redistribute goal amounts
+        toast.error('Goal redistribution not implemented yet - please fix manually');
+      }
+      
+      await onDataUpdate(); // Refresh data
+      analyzeEarnings(); // Re-analyze after fix
+    } catch (error) {
+      console.error('Error fixing discrepancy:', error);
+      toast.error('Failed to fix discrepancy');
+    } finally {
+      setFixing(false);
+    }
+  };
+
+  return (
+    <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 mb-6">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-lg font-bold text-blue-800">💰 Earnings Reconciliation</h2>
+        <button
+          onClick={analyzeEarnings}
+          disabled={analyzing}
+          className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50"
+        >
+          {analyzing ? 'Analyzing...' : '🔍 Check Earnings'}
+        </button>
+      </div>
+      
+      <p className="text-blue-700 mb-4">
+        Check for discrepancies between recorded earnings, actual chore rewards, and goal progress.
+      </p>
+
+      {discrepancies.length === 0 && !analyzing && (
+        <div className="text-green-600 font-medium">
+          ✅ No discrepancies found! All earnings are properly reconciled.
+        </div>
+      )}
+
+      {discrepancies.length > 0 && (
+        <div className="space-y-4">
+          <div className="text-red-600 font-medium mb-2">
+            ⚠️ Found {discrepancies.length} discrepancies:
+          </div>
+          
+          {discrepancies.map(disc => (
+            <div key={disc.childId} className="bg-white border border-red-200 rounded-lg p-4">
+              <h3 className="font-bold text-red-800 mb-2">{disc.childName}</h3>
+              <div className="grid grid-cols-2 gap-4 text-sm mb-3">
+                <div>
+                  <strong>Recorded Earnings:</strong> ${disc.recordedEarnings.toFixed(2)}
+                </div>
+                <div>
+                  <strong>Actual Chore Rewards:</strong> ${disc.actualEarnings.toFixed(2)} ({disc.approvedChoresCount} chores)
+                </div>
+                <div>
+                  <strong>Total Goal Progress:</strong> ${disc.totalGoalProgress.toFixed(2)}
+                </div>
+                <div>
+                  <strong>Earnings Difference:</strong> 
+                  <span className={disc.earningsDiff > 0 ? 'text-red-600' : 'text-green-600'}>
+                    {disc.earningsDiff > 0 ? '+' : ''}${disc.earningsDiff.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+              
+              {disc.earningsDiff !== 0 && (
+                <button
+                  onClick={() => fixDiscrepancy(disc, 'fixEarnings')}
+                  disabled={fixing}
+                  className="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded text-sm mr-2 disabled:opacity-50"
+                >
+                  Fix Total Earnings
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

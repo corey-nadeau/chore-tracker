@@ -117,8 +117,8 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
           // Create date with specific time in local timezone
           dueDateTime = new Date(formData.dueDate + 'T' + formData.dueTime + ':00');
         } else {
-          // Create date at start of day in local timezone
-          dueDateTime = new Date(formData.dueDate + 'T00:00:00');
+          // Create date at end of day in local timezone (23:59:59)
+          dueDateTime = new Date(formData.dueDate + 'T23:59:59');
         }
         choreData.dueDate = dueDateTime;
       }
@@ -411,8 +411,8 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
           // Create date with specific time in local timezone
           dueDateTime = new Date(formData.dueDate + 'T' + formData.dueTime + ':00');
         } else {
-          // Create date at start of day in local timezone
-          dueDateTime = new Date(formData.dueDate + 'T00:00:00');
+          // Create date at end of day in local timezone (23:59:59)
+          dueDateTime = new Date(formData.dueDate + 'T23:59:59');
         }
         updateData.dueDate = dueDateTime;
       } else {

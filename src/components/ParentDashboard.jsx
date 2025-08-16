@@ -168,9 +168,13 @@ function ParentDashboard({ user }) {
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     
-    // Show guidance toast only once using a ref to prevent React.StrictMode double execution
+    // Show guidance toast only once per user and only if they have no data yet
     const timer = setTimeout(() => {
-      if (!window.choreTrackerWelcomeShown) {
+      const welcomeKey = `choreTracker_welcome_${user?.uid}`;
+      const hasSeenWelcome = localStorage.getItem(welcomeKey);
+      
+      // Only show if user hasn't seen it AND they have no children/chores yet
+      if (!hasSeenWelcome && children.length === 0 && chores.length === 0) {
         toast('👋 Click on "Children" or "Chores" tabs to add data!', {
           duration: 6000,
           style: {
@@ -178,7 +182,7 @@ function ParentDashboard({ user }) {
             color: '#fff',
           }
         });
-        window.choreTrackerWelcomeShown = true;
+        localStorage.setItem(welcomeKey, 'true');
       }
     }, 2000);
 
