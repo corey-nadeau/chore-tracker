@@ -1,9 +1,28 @@
-import { PushNotifications } from '@capacitor/push-notifications';
-import { LocalNotifications } from '@capacitor/local-notifications';
+// Safe imports for web deployment
+let PushNotifications, LocalNotifications;
+
+try {
+  PushNotifications = require('@capacitor/push-notifications').PushNotifications;
+  LocalNotifications = require('@capacitor/local-notifications').LocalNotifications;
+} catch (error) {
+  console.log('Capacitor plugins not available in web environment');
+  // Create mock objects for web
+  PushNotifications = {
+    checkPermissions: () => Promise.resolve({ receive: 'denied' }),
+    requestPermissions: () => Promise.resolve({ receive: 'denied' }),
+    register: () => Promise.resolve(),
+    addListener: () => ({ remove: () => {} })
+  };
+  LocalNotifications = {
+    requestPermissions: () => Promise.resolve(),
+    schedule: () => Promise.resolve()
+  };
+}
 
 class NotificationService {
   constructor() {
     this.isInitialized = false;
+    this.isWeb = typeof window !== 'undefined' && !window.Capacitor;
     this.settings = {
       enabled: true,
       newChoresCreated: true,
@@ -17,6 +36,13 @@ class NotificationService {
     if (this.isInitialized) return;
 
     try {
+      // Skip initialization in web environment
+      if (this.isWeb) {
+        console.log('Running in web environment, skipping native notifications');
+        this.isInitialized = true;
+        return;
+      }
+
       // Load user settings if userId provided
       if (userId) {
         await this.loadUserSettings(userId);
@@ -65,6 +91,7 @@ class NotificationService {
       this.isInitialized = true;
     } catch (error) {
       console.error('Error initializing notifications:', error);
+      this.isInitialized = true; // Mark as initialized even if failed
     }
   }
 
@@ -113,6 +140,12 @@ class NotificationService {
       // Check if notifications are enabled
       if (!this.settings.enabled) {
         console.log('Notifications disabled, skipping:', title);
+        return;
+      }
+
+      // Skip in web environment
+      if (this.isWeb) {
+        console.log('Web notification (would show):', title, body);
         return;
       }
 
