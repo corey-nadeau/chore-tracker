@@ -174,6 +174,16 @@ function ChildDashboard() {
       const chore = chores.find(c => c.id === choreId);
       if (!chore) return;
 
+      if ((chore.reward || 0) <= 0) {
+        await updateDoc(doc(db, 'chores', choreId), {
+          status: 'approved',
+          goalAppliedTo: null,
+          rewardAppliedAt: new Date()
+        });
+        toast.success('Mandatory chore approved! 🎉');
+        return;
+      }
+
       const childRef = doc(db, 'children', child.id);
       const childDoc = await getDoc(childRef);
       const currentEarnings = childDoc.data()?.totalEarnings || 0;
@@ -410,7 +420,9 @@ function ChildDashboard() {
                     
                     <div className="flex flex-wrap justify-center items-center gap-2 sm:gap-4 text-xs sm:text-sm text-gray-500 mb-4">
                       {chore.location && <span className="break-words">📍 {chore.location}</span>}
-                      <span>💰 ${chore.reward.toFixed(2)}</span>
+                      {(chore.reward || 0) > 0
+                        ? <span>💰 ${chore.reward.toFixed(2)}</span>
+                        : <span>⭐ No reward</span>}
                     </div>
 
                     {chore.instructions && (
@@ -630,7 +642,11 @@ function ChildDashboard() {
                   <div className="text-center mb-4">
                     <div className="text-2xl sm:text-3xl mb-2">💰</div>
                     <h3 className="text-base sm:text-lg font-bold text-gray-800 break-words">{chore.title}</h3>
-                    <p className="text-green-600 font-bold text-lg sm:text-xl">${chore.reward.toFixed(2)} earned!</p>
+                    {(chore.reward || 0) > 0 && (
+                      <p className="text-green-600 font-bold text-lg sm:text-xl">
+                        ${chore.reward.toFixed(2)} earned!
+                      </p>
+                    )}
                   </div>
                   
                   {currentGoals.length > 0 ? (
@@ -689,7 +705,9 @@ function ChildDashboard() {
                     <h3 className="text-lg sm:text-xl font-bold text-gray-800 mb-2 break-words">{chore.title}</h3>
                     <p className="text-gray-600 mb-2 text-sm sm:text-base">Waiting for parent to approve</p>
                     <div className="text-base sm:text-lg font-bold text-yellow-600">
-                      💰 ${chore.reward.toFixed(2)}
+                      {(chore.reward || 0) > 0
+                        ? `💰 $${chore.reward.toFixed(2)}`
+                        : '⭐ Mandatory chore (no reward)'}
                     </div>
                   </div>
                 </div>

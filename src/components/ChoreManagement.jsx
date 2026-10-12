@@ -1,8 +1,28 @@
 import { useState, useEffect } from 'react';
-import { collection, addDoc, doc, deleteDoc, updateDoc, getDoc, arrayRemove, query, where, getDocs } from 'firebase/firestore';
+import { collection, addDoc, doc, deleteDoc, updateDoc, getDoc, arrayRemove, query, where, getDocs, runTransaction } from 'firebase/firestore';
 import { db } from '../firebase';
 import toast from 'react-hot-toast';
 import notificationService from '../services/notificationService';
+
+const getNextDueDate = (dueDate, recurrence, recurrenceDay) => {
+  const nextDueDate = dueDate?.toDate ? dueDate.toDate() : dueDate ? new Date(dueDate) : new Date();
+
+  if (recurrence === 'daily') {
+    nextDueDate.setDate(nextDueDate.getDate() + 1);
+  } else if (recurrence === 'weekly') {
+    nextDueDate.setDate(nextDueDate.getDate() + 7);
+  } else if (recurrence === 'biweekly') {
+    nextDueDate.setDate(nextDueDate.getDate() + 14);
+  } else if (recurrence === 'monthly') {
+    const dayOfMonth = recurrenceDay || nextDueDate.getDate();
+    nextDueDate.setDate(1);
+    nextDueDate.setMonth(nextDueDate.getMonth() + 1);
+    const lastDayOfMonth = new Date(nextDueDate.getFullYear(), nextDueDate.getMonth() + 1, 0).getDate();
+    nextDueDate.setDate(Math.min(dayOfMonth, lastDayOfMonth));
+  }
+
+  return nextDueDate;
+};
 
 function ChoreManagement({ parentId, children, chores, familyMembers = new Map(), getParentName = () => 'Unknown' }) {
   const [showAddChore, setShowAddChore] = useState(false);
@@ -19,7 +39,8 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
     childId: '',
     instructions: '',
     dueDate: '',
-    dueTime: ''
+    dueTime: '',
+    recurrence: 'none'
   });
   const [loading, setLoading] = useState(false);
   const [checkingReminders, setCheckingReminders] = useState(false);
@@ -101,13 +122,14 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
         category: formData.category,
         location: formData.location === 'Custom' ? formData.customLocation : formData.location,
         type: formData.type,
-        reward: Math.round(parseFloat(formData.reward) * 100) / 100,
+        reward: Math.round((parseFloat(formData.reward) || 0) * 100) / 100,
         childId: formData.childId,
         parentId,
         createdBy: parentId, // Track who created this chore
         instructions: formData.instructions,
         status: 'assigned',
-        createdAt: new Date()
+        createdAt: new Date(),
+        recurrence: formData.recurrence
       };
 
       // Add due date if provided
@@ -122,6 +144,9 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
         }
         choreData.dueDate = dueDateTime;
       }
+      choreData.recurrenceDay = formData.recurrence === 'monthly' && choreData.dueDate
+        ? choreData.dueDate.getDate()
+        : null;
 
       await addDoc(collection(db, 'chores'), choreData);
 
@@ -145,7 +170,7 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
       setFormData({
         title: '', category: 'cleaning', location: '', customLocation: '',
         type: 'inside', reward: '', childId: '', instructions: '', 
-        dueDate: '', dueTime: ''
+        dueDate: '', dueTime: '', recurrence: 'none'
       });
       setShowAddChore(false);
     } catch (error) {
@@ -207,6 +232,49 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
     return emojis[status] || '📋';
   };
 
+  const scheduleNextRecurringChore = async (choreId, choreData) => {
+    if (!['daily', 'weekly', 'biweekly', 'monthly'].includes(choreData.recurrence)) return;
+
+    const choreRef = doc(db, 'chores', choreId);
+    const nextChoreRef = doc(collection(db, 'chores'));
+
+    await runTransaction(db, async (transaction) => {
+      const choreSnapshot = await transaction.get(choreRef);
+      if (!choreSnapshot.exists()) return;
+
+      const currentChore = choreSnapshot.data();
+      if (currentChore.recurringNextChoreId || !['approved', 'awaiting_goal_selection'].includes(currentChore.status)) {
+        return;
+      }
+
+      const recurrenceBaseDate = currentChore.dueDate || new Date();
+      const recurrenceDay = currentChore.recurrence === 'monthly'
+        ? currentChore.recurrenceDay || recurrenceBaseDate.getDate()
+        : null;
+
+      transaction.set(nextChoreRef, {
+        title: currentChore.title,
+        category: currentChore.category,
+        location: currentChore.location || '',
+        type: currentChore.type,
+        reward: currentChore.reward || 0,
+        childId: currentChore.childId,
+        parentId: currentChore.parentId,
+        createdBy: currentChore.createdBy || parentId,
+        instructions: currentChore.instructions || '',
+        status: 'assigned',
+        createdAt: new Date(),
+        dueDate: getNextDueDate(recurrenceBaseDate, currentChore.recurrence, recurrenceDay),
+        recurrence: currentChore.recurrence,
+        recurrenceDay
+      });
+      transaction.update(choreRef, {
+        recurringNextChoreId: nextChoreRef.id,
+        recurringNextChoreCreatedAt: new Date()
+      });
+    });
+  };
+
   const deleteChore = async (choreId, choreTitle) => {
     if (window.confirm(`Are you sure you want to delete "${choreTitle}"? This action cannot be undone.`)) {
       try {
@@ -222,7 +290,7 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
           
           if (childDoc.exists()) {
             const childData = childDoc.data();
-            const newTotalEarnings = Math.max(0, (childData.totalEarnings || 0) - choreData.reward);
+            const newTotalEarnings = Math.max(0, (childData.totalEarnings || 0) - (choreData.reward || 0));
             
             // Update child's total earnings and remove from completed chores
             await updateDoc(childRef, {
@@ -249,6 +317,22 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
       const choreData = choreDoc.data();
 
       if (choreData) {
+        if ((choreData.reward || 0) <= 0) {
+          await updateDoc(choreRef, {
+            status: 'approved',
+            approvedAt: new Date(),
+            approvedBy: parentId
+          });
+          toast.success('Mandatory chore approved! 🎉');
+          try {
+            await scheduleNextRecurringChore(choreId, choreData);
+          } catch (error) {
+            console.error('Error scheduling next recurring chore:', error);
+            toast.error('Chore approved, but the next recurring chore could not be scheduled.');
+          }
+          return;
+        }
+
         // Update child's total earnings immediately upon approval
         const childRef = doc(db, 'children', choreData.childId);
         const childDoc = await getDoc(childRef);
@@ -339,6 +423,13 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
 
           toast.success('Chore approved! Child can now choose which goal to apply the reward to 🎯');
         }
+
+        try {
+          await scheduleNextRecurringChore(choreId, choreData);
+        } catch (error) {
+          console.error('Error scheduling next recurring chore:', error);
+          toast.error('Chore approved, but the next recurring chore could not be scheduled.');
+        }
       }
     } catch (error) {
       console.error('Error approving chore:', error);
@@ -376,11 +467,12 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
       location: isCustomLocation ? 'Custom' : (chore.location || ''),
       customLocation: isCustomLocation ? chore.location : '',
       type: chore.type,
-      reward: chore.reward.toString(),
+      reward: chore.reward ? chore.reward.toString() : '',
       childId: chore.childId,
       instructions: chore.instructions || '',
       dueDate: chore.dueDate ? new Date(chore.dueDate.toDate()).toISOString().split('T')[0] : '',
-      dueTime: chore.dueDate ? new Date(chore.dueDate.toDate()).toTimeString().slice(0, 5) : ''
+      dueTime: chore.dueDate ? new Date(chore.dueDate.toDate()).toTimeString().slice(0, 5) : '',
+      recurrence: chore.recurrence || 'none'
     });
     setShowEditChore(true);
   };
@@ -397,9 +489,10 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
         category: formData.category,
         location: formData.location === 'Custom' ? formData.customLocation : formData.location,
         type: formData.type,
-        reward: Math.round(parseFloat(formData.reward) * 100) / 100,
+        reward: Math.round((parseFloat(formData.reward) || 0) * 100) / 100,
         childId: formData.childId,
         instructions: formData.instructions,
+        recurrence: formData.recurrence,
         updatedAt: new Date(),
         updatedBy: parentId
       };
@@ -418,11 +511,14 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
       } else {
         updateData.dueDate = null;
       }
+      updateData.recurrenceDay = formData.recurrence === 'monthly' && updateData.dueDate
+        ? updateData.dueDate.getDate()
+        : null;
 
       // If chore is approved and reward amount changed, update child's earnings
       if (editingChore.status === 'approved') {
-        const oldReward = editingChore.reward;
-        const newReward = Math.round(parseFloat(formData.reward) * 100) / 100;
+        const oldReward = editingChore.reward || 0;
+        const newReward = Math.round((parseFloat(formData.reward) || 0) * 100) / 100;
         const rewardDifference = newReward - oldReward;
 
         if (rewardDifference !== 0) {
@@ -466,7 +562,8 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
         childId: '',
         instructions: '',
         dueDate: '',
-        dueTime: ''
+        dueTime: '',
+        recurrence: 'none'
       });
     } catch (error) {
       console.error('Error updating chore:', error);
@@ -680,10 +777,10 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
             </div>
 
             {/* Reward and Due Date */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Reward Amount ($) *
+                  Reward Amount ($) <span className="text-gray-500">(Optional)</span>
                 </label>
                 <input
                   type="number"
@@ -692,8 +789,7 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
                   value={formData.reward}
                   onChange={(e) => setFormData({ ...formData, reward: e.target.value })}
                   className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  placeholder="5.00"
-                  required
+                  placeholder="Leave blank for no reward"
                 />
               </div>
               
@@ -731,6 +827,28 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
                     </button>
                   )}
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Repeat
+                </label>
+                <select
+                  value={formData.recurrence}
+                  onChange={(e) => setFormData({ ...formData, recurrence: e.target.value })}
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                >
+                  <option value="none">Does not repeat</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="biweekly">Biweekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+                {formData.recurrence !== 'none' && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    The next chore is assigned after this one is approved.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -864,7 +982,8 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
                     childId: '',
                     instructions: '',
                     dueDate: '',
-                    dueTime: ''
+                    dueTime: '',
+                    recurrence: 'none'
                   });
                 }}
                 className="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-2 rounded-lg transition-colors"
@@ -992,10 +1111,10 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Reward Amount ($) *
+                  Reward Amount ($) <span className="text-gray-500">(Optional)</span>
                 </label>
                 <input
                   type="number"
@@ -1004,7 +1123,7 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
                   value={formData.reward}
                   onChange={(e) => setFormData({ ...formData, reward: e.target.value })}
                   className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  required
+                  placeholder="Leave blank for no reward"
                 />
               </div>
 
@@ -1042,6 +1161,28 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
                     </button>
                   )}
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Repeat
+                </label>
+                <select
+                  value={formData.recurrence}
+                  onChange={(e) => setFormData({ ...formData, recurrence: e.target.value })}
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                >
+                  <option value="none">Does not repeat</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="biweekly">Biweekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+                {formData.recurrence !== 'none' && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    The next chore is assigned after this one is approved.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -1083,7 +1224,8 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
                       childId: '',
                       instructions: '',
                       dueDate: '',
-                      dueTime: ''
+                      dueTime: '',
+                      recurrence: 'none'
                     });
                   }
                 }}
@@ -1106,7 +1248,8 @@ function ChoreManagement({ parentId, children, chores, familyMembers = new Map()
                     childId: '',
                     instructions: '',
                     dueDate: '',
-                    dueTime: ''
+                    dueTime: '',
+                    recurrence: 'none'
                   });
                 }}
                 className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium transition-colors"
@@ -1191,7 +1334,10 @@ function ChoresList({ chores, getChildName, getStatusColor, getStatusEmoji, getS
             <span>👤 {getChildName(chore.childId)}</span>
             {chore.location && <span>📍 {chore.location}</span>}
             <span>🏠 {chore.type}</span>
-            <span>💰 ${chore.reward}</span>
+            <span>{(chore.reward || 0) > 0 ? `💰 $${chore.reward}` : '⭐ No reward'}</span>
+            {['daily', 'weekly', 'biweekly', 'monthly'].includes(chore.recurrence) && (
+              <span>🔁 {chore.recurrence}</span>
+            )}
             {getParentName && (
               <span>
                 👨‍👩‍👧‍👦 Set by: {getParentName(chore.createdBy || chore.parentId)}
@@ -1257,6 +1403,12 @@ function ChoresList({ chores, getChildName, getStatusColor, getStatusEmoji, getS
                   {checkingReminders ? '⏳' : '🔔 Remind'}
                 </button>
               )}
+
+              {['daily', 'weekly', 'biweekly', 'monthly'].includes(chore.recurrence) && (
+                <p className="text-xs text-blue-600 mt-1">
+                  🔁 Repeats {chore.recurrence}
+                </p>
+              )}
             </div>
           )}
 
@@ -1321,7 +1473,9 @@ function ChoreHistoryList({ chores, getChildName, getStatusColor, getStatusEmoji
             </div>
             <div className="flex items-center space-x-2">
               <span>💰</span>
-              <span className="font-medium text-green-600">${chore.reward}</span>
+              <span className="font-medium text-green-600">
+                {(chore.reward || 0) > 0 ? `$${chore.reward}` : 'No reward'}
+              </span>
             </div>
             {chore.location && (
               <div className="flex items-center space-x-2">

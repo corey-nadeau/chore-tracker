@@ -42,7 +42,7 @@ function SuccessModal({ chore, child, onClose }) {
         </p>
         <div className="bg-green-100 rounded-xl p-4 mb-4">
           <div className="text-2xl font-bold text-green-600">
-            +${chore.reward}
+            {(chore.reward || 0) > 0 ? `+$${chore.reward}` : '⭐ No reward'}
           </div>
           <div className="text-sm text-green-700">
             Waiting for parent approval
